@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "stickyproxy",
+      "name": "StickyProxy",
+      "description": "Manages account-scoped sticky upstream proxy URLs for selected CLIProxyAPI accounts.",
+      "author": "KonstantinosZornes",
+      "repository": "https://github.com/KonstantinosZornes/CPAStickyProxy",
+      "homepage": "https://github.com/KonstantinosZornes/CPAStickyProxy",
+      "license": "MIT",
+      "tags": [
+        "Management",
+        "Proxy",
+        "Accounts"
+      ]
+    }
+  ]
+}

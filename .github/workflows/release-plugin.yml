@@ -1,0 +1,337 @@
+name: Release StickyProxy plugin
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing Plugin Store release tag (vX.Y.Z, for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stickyproxy-release-${{ github.event.release.tag_name || inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  PLUGIN_ID: stickyproxy
+  GO_VERSION: "1.26.4"
+  NODE_VERSION: "24.14.1"
+  PNPM_VERSION: "11.7.0"
+
+jobs:
+  resolve-release:
+    name: Resolve release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Validate and resolve Plugin Store release tag
+        id: metadata
+        env:
+          RAW_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="$(printf '%s' "$RAW_TAG" | xargs)"
+          # The official CLIProxyAPI Plugin Store derives versions from a
+          # v-prefixed semantic-release tag. Keep its tag and asset conventions
+          # aligned: vX.Y.Z with optional pre-release / build metadata.
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "release tag must use vX.Y.Z (for example v0.1.0 or v1.2.3-beta.1), got: ${RAW_TAG}" >&2
+            exit 1
+          fi
+          gh release view "$tag" --repo "$REPOSITORY" >/dev/null
+          version="${tag#v}"
+          echo "release_tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify source
+    needs: resolve-release
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.release_tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: plugin/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Install dashboard dependencies
+        working-directory: plugin/web-ui
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check dashboard
+        working-directory: plugin/web-ui
+        run: |
+          pnpm run check
+          pnpm test
+          pnpm run build
+
+      - name: Test and vet native plugin
+        working-directory: plugin
+        run: |
+          go test ./...
+          go vet ./...
+
+  build-linux:
+    name: Build linux/${{ matrix.goarch }}
+    needs: [resolve-release, verify]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runner: ubuntu-24.04
+            manylinux_image: quay.io/pypa/manylinux2014_x86_64
+          - goarch: arm64
+            runner: ubuntu-24.04-arm
+            manylinux_image: quay.io/pypa/manylinux2014_aarch64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.release_tag }}
+
+      - name: Set up Go for packaging
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: plugin/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Build embedded dashboard
+        working-directory: plugin/web-ui
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run build
+
+      # CPA's official Linux plugin-capable releases use GLIBC 2.17 as their
+      # compatibility floor. Build the .so to the same floor so installation
+      # does not fail merely because the plugin needs a newer libc than CPA.
+      - name: Build GLIBC 2.17 plugin library
+        env:
+          MANYLINUX_IMAGE: ${{ matrix.manylinux_image }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src/plugin \
+            -e GOARCH \
+            -e GO_VERSION="${GO_VERSION}" \
+            -e VERSION \
+            "$MANYLINUX_IMAGE" \
+            bash -euo pipefail -c '
+              go_archive="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
+              curl -fsSL "https://go.dev/dl/${go_archive}" -o "/tmp/${go_archive}"
+              rm -rf /usr/local/go
+              tar -C /usr/local -xzf "/tmp/${go_archive}"
+              export PATH="/usr/local/go/bin:${PATH}"
+              CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" \
+                go build -buildvcs=false -trimpath -buildmode=c-shared \
+                  -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
+                  -o /src/release/stickyproxy.so ./cmd/stickyproxy
+            '
+          rm -f release/stickyproxy.h
+          readelf --version-info release/stickyproxy.so | sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -Vu > release/glibc.txt
+          if [[ -s release/glibc.txt ]]; then
+            max_glibc="$(tail -n 1 release/glibc.txt)"
+            if [[ "$(printf '2.17\n%s\n' "$max_glibc" | sort -V | tail -n 1)" != "2.17" ]]; then
+              echo "plugin requires GLIBC_${max_glibc}, expected GLIBC_2.17 or older" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Package Plugin Store archive
+        env:
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="${PLUGIN_ID}_${VERSION}_linux_${{ matrix.goarch }}.zip"
+          go run ./plugin/scripts/package-release.go \
+            -library release/stickyproxy.so \
+            -archive "release/${archive}" \
+            -checksum "release/${archive}.sha256"
+          rm -f release/stickyproxy.so release/glibc.txt
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stickyproxy-linux-${{ matrix.goarch }}
+          path: release/*.zip
+          if-no-files-found: error
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stickyproxy-linux-${{ matrix.goarch }}-checksum
+          path: release/*.sha256
+          if-no-files-found: error
+
+  build-hosted:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [resolve-release, verify]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            extension: dylib
+          - goos: darwin
+            goarch: arm64
+            runner: macos-15
+            extension: dylib
+          - goos: windows
+            goarch: amd64
+            runner: windows-2025
+            extension: dll
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.release_tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: plugin/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Build embedded dashboard
+        working-directory: plugin/web-ui
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run build
+
+      - name: Build native plugin library
+        working-directory: plugin
+        env:
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../release
+          CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -buildvcs=false -trimpath -buildmode=c-shared \
+              -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
+              -o "../release/${PLUGIN_ID}.${{ matrix.extension }}" ./cmd/stickyproxy
+          rm -f "../release/${PLUGIN_ID}.h"
+
+      - name: Package Plugin Store archive
+        env:
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="${PLUGIN_ID}_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          go run ./plugin/scripts/package-release.go \
+            -library "release/${PLUGIN_ID}.${{ matrix.extension }}" \
+            -archive "release/${archive}" \
+            -checksum "release/${archive}.sha256"
+          rm -f "release/${PLUGIN_ID}.${{ matrix.extension }}"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stickyproxy-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: release/*.zip
+          if-no-files-found: error
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stickyproxy-${{ matrix.goos }}-${{ matrix.goarch }}-checksum
+          path: release/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Attach release assets
+    needs: [resolve-release, build-linux, build-hosted]
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stickyproxy-*
+          path: release
+          merge-multiple: true
+
+      - name: Assemble checksums
+        run: |
+          set -euo pipefail
+          test -n "$(find release -maxdepth 1 -name '*.zip' -print -quit)"
+          sort release/*.sha256 > release/checksums.txt
+          rm release/*.sha256
+          cat release/checksums.txt
+
+      - name: Attach assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve-release.outputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release/*.zip release/checksums.txt --clobber --repo "$REPOSITORY"

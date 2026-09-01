@@ -1,0 +1,25 @@
+# Native plugin build artifacts
+dist/*.so
+dist/*.dylib
+dist/*.dll
+dist/*.h
+
+# Runtime state includes plaintext proxy credentials by design
+stickyproxy-state.json
+data/
+
+# Isolated local integration fixtures
+testdata/
+
+# Go build/test outputs
+plugin/coverage.out
+plugin/*.test
+
+# React TypeScript source build dependencies and intermediate output
+plugin/web-ui/node_modules/
+plugin/web-ui/dist/
+plugin/web/dist/
+
+# OS/editor artifacts
+.DS_Store
+*.swp
