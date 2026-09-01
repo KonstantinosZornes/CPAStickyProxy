@@ -11,15 +11,12 @@
 
 ### 主界面
 
-<p align="center">
-  <img width="3000" height="1662" alt="StickyProxy 主界面" src="https://github.com/user-attachments/assets/ddc41979-699d-425f-9566-9ae86bd87d04" />
-</p>
+<img width="3000" height="1662" alt="图片" src="https://github.com/user-attachments/assets/ed500b2f-ef4d-4aa4-bb7c-1ae662d94672" />
 
 ### 应用代理界面
 
-<p align="center">
-  <img width="1200" alt="StickyProxy 应用代理界面" src="https://github.com/user-attachments/assets/8c55eb6b-abf4-47f5-b893-5061fef50573" />
-</p>
+<img width="3000" height="1662" alt="图片" src="https://github.com/user-attachments/assets/069dbaf2-4c8f-42ba-bc74-4b690b173577" />
+
 
 ## 它能做什么？
 
