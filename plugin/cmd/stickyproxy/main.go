@@ -62,11 +62,12 @@ const (
 
 	// schemaVersion mirrors the highest CPA pluginabi RPC contract this plugin
 	// understands. Hosts announce their schema_version at register/reconfigure;
-	// CPA v7.2.145+ (schema 4) is rejected unless declared here, so this must
-	// track pluginabi.SchemaVersion or newer hosts drop the plugin. Schema 4
-	// only adds websocket/egress capabilities this plugin does not use, so the
-	// v3 wire contract it relies on is unchanged.
-	schemaVersion uint32 = 4
+	// CPA v7.2.152+ (schema 5) is rejected unless declared here, so this must
+	// track pluginabi.SchemaVersion or newer hosts drop the plugin. Schemas 4
+	// and 5 only add websocket observation and stream-chunk history omission,
+	// which this plugin does not use, so the v3 wire contract it relies on is
+	// unchanged.
+	schemaVersion uint32 = 5
 
 	// builtinStatePath is deliberately not a plugin configuration field. CPA
 	// resolves this relative to its own working directory, alongside plugins,
