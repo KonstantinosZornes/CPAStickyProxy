@@ -23,6 +23,65 @@ func TestPluginRegistrationUsesBuildVersion(t *testing.T) {
 	}
 }
 
+func TestPluginRegistrationNegotiatesSchemaVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		host uint32
+		want uint32
+	}{
+		{name: "legacy or unspecified host", host: 0, want: schemaVersion},
+		{name: "older host", host: schemaVersion - 1, want: schemaVersion - 1},
+		{name: "same version", host: schemaVersion, want: schemaVersion},
+		{name: "newer host", host: schemaVersion + 1, want: schemaVersion},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pluginRegistrationForHost(tt.host).SchemaVersion; got != tt.want {
+				t.Fatalf("negotiated schema = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleMethodAcceptsFutureHostSchema(t *testing.T) {
+	current = runtime{}
+	defer func() { current = runtime{} }()
+
+	workingDir := t.TempDir()
+	oldWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workingDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWorkingDir)
+
+	request, err := json.Marshal(lifecycleRequest{SchemaVersion: schemaVersion + 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleMethod(methodPluginRegister, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response envelope
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK {
+		t.Fatalf("registration response = %#v, want success", response)
+	}
+	var registration registration
+	if err := json.Unmarshal(response.Result, &registration); err != nil {
+		t.Fatal(err)
+	}
+	if registration.SchemaVersion != schemaVersion {
+		t.Fatalf("registration schema = %d, want known schema %d", registration.SchemaVersion, schemaVersion)
+	}
+}
+
 func TestConfigureUsesJSONStatePathAndIgnoresLegacyState(t *testing.T) {
 	// runtime contains synchronization primitives and must not be copied.
 	// Tests do not run in parallel, so reset its global state before and after.
@@ -50,8 +109,9 @@ func TestConfigureUsesJSONStatePathAndIgnoresLegacyState(t *testing.T) {
 	configuredPath := filepath.Join(t.TempDir(), "operator-selected-state.json")
 	configYAML := "plugins:\n  configs:\n    stickyproxy:\n      state_path: " + configuredPath
 	request, err := json.Marshal(lifecycleRequest{
-		ConfigYAML:    []byte(configYAML),
-		SchemaVersion: schemaVersion,
+		ConfigYAML: []byte(configYAML),
+		// A newer host schema must not prevent state initialization.
+		SchemaVersion: schemaVersion + 1,
 	})
 	if err != nil {
 		t.Fatal(err)

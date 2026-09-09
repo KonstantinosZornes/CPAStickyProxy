@@ -60,14 +60,12 @@ import (
 const (
 	abiVersion uint32 = 1
 
-	// schemaVersion mirrors the highest CPA pluginabi RPC contract this plugin
-	// understands. Hosts announce their schema_version at register/reconfigure;
-	// CPA v7.2.152+ (schema 5) is rejected unless declared here, so this must
-	// track pluginabi.SchemaVersion or newer hosts drop the plugin. Schemas 4
-	// and 5 only add websocket observation and stream-chunk history omission,
-	// which this plugin does not use, so the v3 wire contract it relies on is
-	// unchanged.
-	schemaVersion uint32 = 5
+	// schemaVersion is the highest CPA pluginabi RPC contract this plugin knows.
+	// The lifecycle request carries the host's current schema; registration
+	// negotiates the lower of the two versions so additive host releases do not
+	// make this plugin unloadable. Schema 6 preserves raw JSON management
+	// response bodies, which this plugin already returns.
+	schemaVersion uint32 = 6
 
 	// builtinStatePath is deliberately not a plugin configuration field. CPA
 	// resolves this relative to its own working directory, alongside plugins,
@@ -231,12 +229,16 @@ func cliproxyPluginShutdown() {
 func handleMethod(method string, raw []byte) ([]byte, error) {
 	switch method {
 	case methodPluginRegister, methodPluginReconfigure:
-		if err := configure(raw); err != nil {
+		request, err := decodeLifecycleRequest(raw)
+		if err != nil {
+			return errorEnvelope("configure_failed", "plugin configuration failed", http.StatusInternalServerError), nil
+		}
+		if err := configureRequest(request); err != nil {
 			// State parsing may encounter a plaintext proxy URL. Do not return
 			// implementation error text through the ABI envelope.
 			return errorEnvelope("configure_failed", "plugin configuration failed", http.StatusInternalServerError), nil
 		}
-		return okEnvelope(pluginRegistration()), nil
+		return okEnvelope(pluginRegistrationForHost(request.SchemaVersion)), nil
 	case methodManagementRegister:
 		return okEnvelope(managementRegistrationResponse()), nil
 	case methodManagementHandle:
@@ -251,8 +253,16 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 }
 
 func pluginRegistration() registration {
+	return pluginRegistrationForHost(schemaVersion)
+}
+
+func pluginRegistrationForHost(hostSchemaVersion uint32) registration {
+	negotiatedSchemaVersion := schemaVersion
+	if hostSchemaVersion != 0 && hostSchemaVersion < negotiatedSchemaVersion {
+		negotiatedSchemaVersion = hostSchemaVersion
+	}
 	return registration{
-		SchemaVersion: schemaVersion,
+		SchemaVersion: negotiatedSchemaVersion,
 		Metadata: metadata{
 			Name: "StickyProxy", Version: pluginVersion, Author: "StickyProxy",
 			GitHubRepository: "https://github.com/KonstantinosZornes/CPAStickyProxy",
@@ -287,15 +297,24 @@ func managementRegistrationResponse() managementRegistration {
 }
 
 func configure(raw []byte) error {
+	request, err := decodeLifecycleRequest(raw)
+	if err != nil {
+		return err
+	}
+	return configureRequest(request)
+}
+
+func decodeLifecycleRequest(raw []byte) (lifecycleRequest, error) {
 	var request lifecycleRequest
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &request); err != nil {
-			return err
+			return lifecycleRequest{}, err
 		}
 	}
-	if request.SchemaVersion > schemaVersion {
-		return fmt.Errorf("unsupported plugin schema version %d", request.SchemaVersion)
-	}
+	return request, nil
+}
+
+func configureRequest(_ lifecycleRequest) error {
 	path := builtinStatePath
 	current.mu.Lock()
 	defer current.mu.Unlock()
