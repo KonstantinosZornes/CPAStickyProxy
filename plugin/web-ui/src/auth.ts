@@ -15,28 +15,42 @@ type PersistedEnvelope = {
 
 type ObfuscationVersion = "v1" | "v2";
 
-function obfuscationKeyBytes(version: ObfuscationVersion): Uint8Array {
+function obfuscationKeyCandidates(version: ObfuscationVersion): Uint8Array[] {
   try {
+    const host = location.host;
     if (version === "v2") {
-      return new TextEncoder().encode(`${OBFUSCATION_SALT}|v2|${location.host}`);
+      // Current CPA-Manager-Plus uses the versioned key. Older deployed
+      // builds wrote enc::v2:: with the host-only key, so keep both readable.
+      return [
+        new TextEncoder().encode(`${OBFUSCATION_SALT}|v2|${host}`),
+        new TextEncoder().encode(`${OBFUSCATION_SALT}|${host}`),
+      ];
     }
-    return new TextEncoder().encode(
-      `${OBFUSCATION_SALT}|${location.host}|${navigator.userAgent}`,
-    );
+    return [new TextEncoder().encode(`${OBFUSCATION_SALT}|${host}|${navigator.userAgent}`)];
   } catch {
-    return new TextEncoder().encode(
-      version === "v2" ? `${OBFUSCATION_SALT}|v2` : OBFUSCATION_SALT,
-    );
+    return version === "v2"
+      ? [
+          new TextEncoder().encode(`${OBFUSCATION_SALT}|v2`),
+          new TextEncoder().encode(OBFUSCATION_SALT),
+        ]
+      : [new TextEncoder().encode(OBFUSCATION_SALT)];
   }
 }
 
 function decodeObfuscated(raw: string, prefix: string, version: ObfuscationVersion): unknown {
-  const bytes = Uint8Array.from(atob(raw.slice(prefix.length)), (char) => char.charCodeAt(0));
-  const key = obfuscationKeyBytes(version);
-  for (let index = 0; index < bytes.length; index += 1) {
-    bytes[index] ^= key[index % key.length];
+  const encrypted = Uint8Array.from(atob(raw.slice(prefix.length)), (char) => char.charCodeAt(0));
+  for (const key of obfuscationKeyCandidates(version)) {
+    const bytes = encrypted.slice();
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] ^= key[index % key.length];
+    }
+    try {
+      return JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      // Try the next key derivation used by another CPA-Manager-Plus build.
+    }
   }
-  return JSON.parse(new TextDecoder().decode(bytes));
+  throw new Error("Unable to decode persisted authentication");
 }
 
 function decodeAuthStorage(raw: string | null): unknown {
