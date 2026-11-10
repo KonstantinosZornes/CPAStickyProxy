@@ -5,7 +5,7 @@ export type Language = AppLanguage;
 type Dictionary = Record<string, string>;
 
 const zh: Dictionary = {
-  auth_required: "请先在 CPA 管理中心登录",
+  auth_required: "请先登录 CPA 管理中心，并启用“记住密码”以供插件读取认证信息",
   request_failed: "请求失败",
   proxy: "代理",
   proxies: "代理列表",
@@ -126,7 +126,7 @@ const zh: Dictionary = {
 };
 
 const en: Dictionary = {
-  auth_required: "Sign in through CPA Management Center first",
+  auth_required: "Sign in to CPA Management Center and enable Remember Password so the plugin can read the management key",
   request_failed: "Request failed",
   proxy: "Proxy",
   proxies: "Proxies",

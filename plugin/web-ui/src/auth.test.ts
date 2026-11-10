@@ -70,9 +70,19 @@ describe("readAuth across management center storage formats", () => {
     });
   });
 
-  it("reads enc::v2:: ciphertext from CPA-Manager-Plus", () => {
+  it("reads current CPA-Manager-Plus enc::v2:: ciphertext", () => {
     stubHostPage();
     stubAuthStorage(`enc::v2::${obfuscate(envelope, `${OBFUSCATION_SALT}|v2|cpa.local:8317`)}`);
+
+    expect(readAuth()).toEqual({
+      apiBase: "http://cpa.local:8317",
+      managementKey: "test-key",
+    });
+  });
+
+  it("reads host-only enc::v2:: ciphertext from older CPA-Manager-Plus builds", () => {
+    stubHostPage();
+    stubAuthStorage(`enc::v2::${obfuscate(envelope, `${OBFUSCATION_SALT}|cpa.local:8317`)}`);
 
     expect(readAuth()).toEqual({
       apiBase: "http://cpa.local:8317",
